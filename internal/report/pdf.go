@@ -40,7 +40,7 @@ type chartBar struct {
 }
 
 // WritePDF writes the same analytics shown in the console to a printable file.
-func WritePDF(path string, result analytics.Result, mode, jql string) (string, error) {
+func WritePDF(path string, result analytics.Result, jql string) (string, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
@@ -72,7 +72,7 @@ func WritePDF(path string, result analytics.Result, mode, jql string) (string, e
 		pdf.CellFormat(0, 4, fmt.Sprintf("Page %d of {pages}", pdf.PageNo()), "", 0, "C", false, 0, "")
 	})
 
-	report.writeOverview(result, mode, jql)
+	report.writeOverview(result, jql)
 	report.writeBreakdowns(result)
 	report.writeEngineerDetails(result)
 	report.writeDataQuality(result)
@@ -100,20 +100,19 @@ func WritePDF(path string, result analytics.Result, mode, jql string) (string, e
 	return absPath, nil
 }
 
-func (r *pdfReport) writeOverview(result analytics.Result, mode, jql string) {
+func (r *pdfReport) writeOverview(result analytics.Result, jql string) {
 	r.pdf.AddPage()
 	r.pdf.SetTextColor(25, 25, 25)
 	r.pdf.SetFont("DejaVu", "B", 18)
 	r.pdf.CellFormat(0, 9, r.text("Engineering Sprint Activity Report"), "", 1, "L", false, 0, "")
 	r.pdf.SetFont("DejaVu", "", 9)
 	r.pdf.SetTextColor(80, 80, 80)
-	r.pdf.CellFormat(0, 5, r.text(fmt.Sprintf("Source: %s", mode)), "", 1, "L", false, 0, "")
 	r.pdf.CellFormat(0, 5, r.text(fmt.Sprintf("Period: %s to %s (%d business days)",
 		result.Period.Start.Format("02 Jan 2006"),
 		result.Period.End.AddDate(0, 0, -1).Format("02 Jan 2006"),
 		result.BusinessDays,
 	)), "", 1, "L", false, 0, "")
-	if mode != "demo data" {
+	if strings.TrimSpace(jql) != "" {
 		r.pdf.SetFont("DejaVu", "", 8)
 		r.pdf.MultiCell(0, 4, r.text("JQL: "+oneLine(jql)), "", "L", false)
 	}

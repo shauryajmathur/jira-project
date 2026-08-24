@@ -89,7 +89,6 @@ function setLoading(loading) {
 function renderSummary(report) {
   const summary = report.summary;
   const scope = report.selectedSpace || "All spaces";
-  byId("source").textContent = report.source;
   byId("scope").textContent = scope;
   byId("period").textContent = `${formatDate(report.period.start)} – ${formatDate(report.period.end)} · ${report.period.businessDays} business days`;
   byId("last-updated").textContent = new Intl.DateTimeFormat(undefined, {
@@ -97,8 +96,6 @@ function renderSummary(report) {
     minute: "2-digit",
     second: "2-digit",
   }).format(new Date(report.updatedAt));
-  document.querySelector(".live-dot").classList.toggle("stale", report.stale);
-
   byId("sprint-hours").textContent = formatHours(summary.sprintUtilizationHours);
   const sprintDetail = [`Recorded across ${countLabel(summary.workedIssueCount, "worked issue")}`];
   if (summary.unattributedHours > 0) sprintDetail.push(`${formatHours(summary.unattributedHours)} without an author`);
@@ -116,7 +113,6 @@ function renderSummary(report) {
     : `${countLabel(summary.trackedResources, "tracked resource")} represented`;
   byId("issues-worked").textContent = `${summary.workedIssueCount} / ${summary.issueCount}`;
   byId("issues-detail").textContent = "Worked issues / selected sprint issues";
-  byId("scope-note").textContent = `${scope} · Sprint utilisation is total recorded work; team capacity compares recorded and planned hours by tracked resource.`;
 }
 
 function refreshSpaceFilter(spaces, selectedSpace) {

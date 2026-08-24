@@ -92,12 +92,8 @@ func (s *Server) reportPDF(writer http.ResponseWriter, request *http.Request) {
 	}
 
 	outputPath := scopedReportPath(s.outputPath, selectedSpace)
-	source := data.Source
-	if selectedSpace != "" {
-		source += " · Space " + selectedSpace
-	}
 	s.pdfMu.Lock()
-	path, err := report.WritePDF(outputPath, data.Result, source, data.JQL)
+	path, err := report.WritePDF(outputPath, data.Result, data.JQL)
 	if err != nil {
 		s.pdfMu.Unlock()
 		http.Error(writer, "Could not create PDF report", http.StatusInternalServerError)

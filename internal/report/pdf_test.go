@@ -35,7 +35,7 @@ func TestWritePDF(t *testing.T) {
 	}
 
 	path := filepath.Join(t.TempDir(), "report.pdf")
-	savedPath, err := WritePDF(path, result, "test data", "project = APP")
+	savedPath, err := WritePDF(path, result, "project = APP")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestWritePDFPreservesUnicodeText(t *testing.T) {
 	}
 
 	path := filepath.Join(t.TempDir(), "unicode-report.pdf")
-	if _, err := WritePDF(path, result, "test data", "project = APP"); err != nil {
+	if _, err := WritePDF(path, result, "project = APP"); err != nil {
 		t.Fatal(err)
 	}
 	contents, err := os.ReadFile(path)

@@ -285,26 +285,6 @@ summary:focus-visible {
   text-transform: uppercase;
 }
 
-.source-value {
-  align-items: center;
-  display: inline-flex;
-  font-weight: 650;
-  gap: 7px;
-}
-
-.live-dot {
-  background: var(--green);
-  border-radius: 50%;
-  box-shadow: 0 0 0 3px var(--green-pale);
-  height: 7px;
-  width: 7px;
-}
-
-.live-dot.stale {
-  background: var(--amber);
-  box-shadow: 0 0 0 3px var(--amber-pale);
-}
-
 .next-refresh {
   color: var(--muted);
   margin-left: auto;

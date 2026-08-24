@@ -71,7 +71,7 @@ func runReport(cfg config.Config) error {
 	}
 
 	pdfPath := filepath.Join("output", "pdf", "engineering-utilization-report.pdf")
-	savedPath, err := report.WritePDF(pdfPath, data.Result, data.Source, data.JQL)
+	savedPath, err := report.WritePDF(pdfPath, data.Result, data.JQL)
 	if err != nil {
 		return fmt.Errorf("write PDF report: %w", err)
 	}

@@ -24,8 +24,8 @@ func TestDashboardRoutes(t *testing.T) {
 	if !bytes.Contains(index.Body.Bytes(), []byte("All spaces")) || bytes.Contains(index.Body.Bytes(), []byte("Data quality")) || bytes.Contains(index.Body.Bytes(), []byte("Jira query and calculation notes")) || bytes.Contains(index.Body.Bytes(), []byte("Observed utilization")) || bytes.Contains(index.Body.Bytes(), []byte("100% capacity")) {
 		t.Fatal("dashboard index does not contain the expected space filter and removals")
 	}
-	if !bytes.Contains(index.Body.Bytes(), []byte("including people with no logged time")) || bytes.Contains(index.Body.Bytes(), []byte("Read-only Jira reporting")) || bytes.Contains(index.Body.Bytes(), []byte("<footer")) {
-		t.Fatal("dashboard index does not contain the per-person work control or still contains the removed footer")
+	if !bytes.Contains(index.Body.Bytes(), []byte("contributor-table")) || bytes.Contains(index.Body.Bytes(), []byte("Tracked assignees and worklog authors")) || bytes.Contains(index.Body.Bytes(), []byte("Sprint utilisation uses Jira worklogs")) || bytes.Contains(index.Body.Bytes(), []byte("<span class=\"sync-label\">Source</span>")) || bytes.Contains(index.Body.Bytes(), []byte("Read-only Jira reporting")) || bytes.Contains(index.Body.Bytes(), []byte("<footer")) {
+		t.Fatal("dashboard index is missing the contributor table or still contains removed copy")
 	}
 	if index.Header().Get("Content-Security-Policy") == "" {
 		t.Fatal("dashboard response is missing its content security policy")
