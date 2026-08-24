@@ -68,26 +68,6 @@ select {
   padding: 12px clamp(18px, 3vw, 48px);
 }
 
-.brand {
-  align-items: center;
-  display: flex;
-  gap: 12px;
-}
-
-.brand-mark {
-  align-items: center;
-  background: var(--ink);
-  color: white;
-  display: inline-flex;
-  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
-  font-size: 12px;
-  font-weight: 700;
-  height: 38px;
-  justify-content: center;
-  letter-spacing: .06em;
-  width: 38px;
-}
-
 .eyebrow,
 .section-kicker {
   color: var(--muted);
@@ -853,10 +833,6 @@ main {
   .topbar {
     align-items: flex-start;
     gap: 14px;
-  }
-
-  .brand-mark {
-    display: none;
   }
 
   .actions {
