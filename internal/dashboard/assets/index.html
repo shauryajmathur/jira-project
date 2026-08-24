@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Engineering sprint activity</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to dashboard</a>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">SA</span>
+      <div>
+        <p class="eyebrow">Engineering analytics</p>
+        <h1>Sprint activity</h1>
+      </div>
+    </div>
+    <div class="actions">
+      <div class="period-control" role="group" aria-label="Reporting period">
+        <label for="period-start"><span>From</span><input id="period-start" type="date"></label>
+        <label for="period-end"><span>To</span><input id="period-end" type="date"></label>
+        <button class="button button-secondary" id="apply-period" type="button">Apply dates</button>
+      </div>
+      <label class="space-control" for="space-filter">
+        <span>Space</span>
+        <select id="space-filter">
+          <option value="">All spaces</option>
+        </select>
+      </label>
+      <a class="button button-secondary" id="download-pdf" href="/report.pdf">Download PDF</a>
+      <button class="button button-primary" id="refresh-button" type="button">
+        <span class="refresh-icon" aria-hidden="true"></span>
+        Refresh Jira
+      </button>
+    </div>
+  </header>
+
+  <div class="sync-strip" aria-label="Report status">
+    <div class="sync-item">
+      <span class="sync-label">Source</span>
+      <span class="source-value"><span class="live-dot" aria-hidden="true"></span><span id="source">Connecting</span></span>
+    </div>
+    <div class="sync-item">
+      <span class="sync-label">Scope</span>
+      <span id="scope">All spaces</span>
+    </div>
+    <div class="sync-item">
+      <span class="sync-label">Reporting window</span>
+      <span id="period">Loading</span>
+    </div>
+    <div class="sync-item sync-item-last">
+      <span class="sync-label">Last synced</span>
+      <span id="last-updated">Not yet</span>
+      <span class="next-refresh" id="next-refresh"></span>
+    </div>
+  </div>
+
+  <div class="message" id="message" role="status" hidden></div>
+
+  <main id="main-content">
+    <section class="dashboard-section summary-section" aria-labelledby="summary-title">
+      <div class="section-heading">
+        <div>
+          <p class="section-kicker">Selected period</p>
+          <h2 id="summary-title">Operating summary</h2>
+        </div>
+        <p class="section-note" id="scope-note">Sprint utilisation uses Jira worklogs; team capacity compares recorded and planned hours.</p>
+      </div>
+
+      <div class="metric-ledger" aria-label="Summary metrics">
+        <article class="metric">
+          <span class="metric-label">Sprint utilisation</span>
+          <strong class="metric-value" id="sprint-hours">—</strong>
+          <span class="metric-detail" id="sprint-detail">Recorded work in this period</span>
+        </article>
+        <article class="metric">
+          <span class="metric-label">Planned estimate</span>
+          <strong class="metric-value" id="planned-hours">—</strong>
+          <span class="metric-detail" id="variance-detail">Waiting for Jira</span>
+        </article>
+        <article class="metric metric-emphasis">
+          <span class="metric-label">Resources with logged time</span>
+          <strong class="metric-value" id="resources-with-time">—</strong>
+          <span class="metric-detail" id="resource-detail">Worklog authors in this period</span>
+        </article>
+        <article class="metric">
+          <span class="metric-label">Issues worked</span>
+          <strong class="metric-value" id="issues-worked">—</strong>
+          <span class="metric-detail" id="issues-detail">Selected issues with logged time</span>
+        </article>
+      </div>
+    </section>
+
+    <div class="dashboard-grid">
+      <section class="panel team-panel" aria-labelledby="team-title">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">People</p>
+            <h2 id="team-title">Team capacity</h2>
+          </div>
+          <span class="legend">Tracked assignees and worklog authors, including people with no logged time</span>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table contributor-table">
+            <thead>
+              <tr>
+                <th scope="col">Contributor</th>
+                <th scope="col">Time spent</th>
+                <th scope="col">Sprint share</th>
+                <th scope="col">Planned</th>
+                <th scope="col">Variance</th>
+                <th scope="col">Issues worked</th>
+              </tr>
+            </thead>
+            <tbody id="engineer-rows">
+              <tr><td class="empty-row" colspan="6">Loading contributor data…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <aside class="panel allocation-panel" aria-labelledby="allocation-title">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Portfolio</p>
+            <h2 id="allocation-title">Work allocation</h2>
+          </div>
+        </div>
+        <h3 class="subheading">By work type</h3>
+        <div class="bar-list" id="category-bars"></div>
+        <h3 class="subheading project-subheading">By project</h3>
+        <div class="project-list" id="project-list"></div>
+      </aside>
+    </div>
+
+    <section class="panel activity-panel" aria-labelledby="activity-title">
+      <div class="panel-heading activity-heading">
+        <div>
+          <p class="section-kicker">Issue detail</p>
+          <h2 id="activity-title">What the team worked on</h2>
+        </div>
+        <div class="filters">
+          <label>
+            <span class="visually-hidden">Filter by contributor</span>
+            <select id="engineer-filter">
+              <option value="">All contributors</option>
+            </select>
+          </label>
+          <label class="search-box">
+            <span class="search-glyph" aria-hidden="true"></span>
+            <span class="visually-hidden">Search issues</span>
+            <input id="issue-search" type="search" placeholder="Search key or summary">
+          </label>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table activity-table">
+          <thead>
+            <tr>
+              <th scope="col">Issue</th>
+              <th scope="col">Summary</th>
+              <th scope="col">Contributor</th>
+              <th scope="col">Project</th>
+              <th scope="col">Work type</th>
+              <th scope="col">Time spent</th>
+              <th scope="col">Planned</th>
+            </tr>
+          </thead>
+          <tbody id="activity-rows">
+            <tr><td class="empty-row" colspan="7">Loading issue activity…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="table-count" id="activity-count"></p>
+    </section>
+
+  </main>
+</body>
+</html>

@@ -1,0 +1,6 @@
+.env
+*.log
+jira-project
+output/
+tmp/
+.DS_Store
