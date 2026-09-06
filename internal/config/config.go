@@ -15,7 +15,6 @@ import (
 )
 
 type Config struct {
-	Demo           bool
 	JiraBaseURL    string
 	JiraEmail      string
 	JiraToken      string
@@ -59,19 +58,9 @@ func Load(now time.Time) (Config, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("JIRA_BASE_URL")), "/")
 	email := strings.TrimSpace(os.Getenv("JIRA_EMAIL"))
 	token := strings.TrimSpace(os.Getenv("JIRA_API_TOKEN"))
-	demo, err := boolValue("DEMO", false)
-	if err != nil {
-		return Config{}, fmt.Errorf("DEMO must be true or false")
-	}
 	credentialsSet := baseURL != "" || email != "" || token != ""
-	if credentialsSet && (baseURL == "" || email == "" || token == "") {
+	if !credentialsSet || baseURL == "" || email == "" || token == "" {
 		return Config{}, fmt.Errorf("JIRA_BASE_URL, JIRA_EMAIL, and JIRA_API_TOKEN must all be set")
-	}
-	if demo && credentialsSet {
-		return Config{}, fmt.Errorf("DEMO cannot be combined with Jira credentials")
-	}
-	if !demo && !credentialsSet {
-		return Config{}, fmt.Errorf("credentials for Jira are required; set DEMO=true to use sample data")
 	}
 
 	jql := strings.TrimSpace(os.Getenv("JIRA_JQL"))
@@ -80,7 +69,6 @@ func Load(now time.Time) (Config, error) {
 	}
 
 	return Config{
-		Demo:           demo,
 		JiraBaseURL:    baseURL,
 		JiraEmail:      email,
 		JiraToken:      token,
@@ -249,14 +237,6 @@ func intValue(name string, fallback int) (int, error) {
 		return fallback, nil
 	}
 	return strconv.Atoi(raw)
-}
-
-func boolValue(name string, fallback bool) (bool, error) {
-	raw := strings.TrimSpace(os.Getenv(name))
-	if raw == "" {
-		return fallback, nil
-	}
-	return strconv.ParseBool(raw)
 }
 
 func value(name, fallback string) string {

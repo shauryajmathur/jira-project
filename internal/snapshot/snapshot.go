@@ -9,7 +9,6 @@ import (
 	"jira-project/internal/config"
 	"jira-project/internal/jira"
 	"jira-project/internal/model"
-	"jira-project/internal/sample"
 )
 
 type Data struct {
@@ -20,10 +19,6 @@ type Data struct {
 }
 
 func Load(ctx context.Context, cfg config.Config) (Data, error) {
-	if cfg.Demo {
-		return calculate(sample.Issues(cfg.Period), cfg, "demo data"), nil
-	}
-
 	client, err := jira.NewClient(cfg.JiraBaseURL, cfg.JiraEmail, cfg.JiraToken, cfg.Parallelism)
 	if err != nil {
 		return Data{}, err

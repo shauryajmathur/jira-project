@@ -12,6 +12,7 @@ import (
 
 	"jira-project/internal/config"
 	"jira-project/internal/dashboard"
+	"jira-project/internal/jiramcp"
 	"jira-project/internal/report"
 	"jira-project/internal/snapshot"
 )
@@ -24,11 +25,25 @@ func main() {
 }
 
 func run(args []string) error {
+	if len(args) > 0 && args[0] == "mcp" {
+		mcpFlags := flag.NewFlagSet("mcp", flag.ContinueOnError)
+		mcpFlags.SetOutput(io.Discard)
+		outputDir := mcpFlags.String("output-dir", "", "directory for generated PDFs")
+		configFile := mcpFlags.String("config-file", "", "private Jira configuration supplied by the dashboard")
+		if err := mcpFlags.Parse(args[1:]); err != nil || mcpFlags.NArg() != 0 || *outputDir == "" || *configFile == "" {
+			return fmt.Errorf("usage: jira-project mcp --output-dir PATH --config-file PATH")
+		}
+		cfg, err := jiramcp.ReadConfig(*configFile)
+		if err != nil {
+			return err
+		}
+		return jiramcp.Run(context.Background(), cfg, *outputDir)
+	}
+
 	cfg, err := config.Load(time.Now())
 	if err != nil {
 		return err
 	}
-
 	if len(args) == 0 {
 		return runReport(cfg)
 	}

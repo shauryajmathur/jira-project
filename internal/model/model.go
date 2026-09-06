@@ -27,17 +27,36 @@ type Worklog struct {
 	Seconds int64
 }
 
+type Comment struct {
+	Author       User
+	Created      time.Time
+	UpdateAuthor User
+	Updated      time.Time
+}
+
+type Change struct {
+	Author  User
+	Created time.Time
+	Fields  []string
+}
+
 // Issue is the subset of a Jira issue required for sprint activity analytics.
 type Issue struct {
+	ID                      string
 	Key                     string
 	Summary                 string
 	Type                    string
 	ProjectKey              string
 	ProjectName             string
 	Assignee                User
+	Creator                 User
+	Created                 time.Time
+	Updated                 time.Time
 	Labels                  []string
 	OriginalEstimateSeconds int64
 	Worklogs                []Worklog
+	Comments                []Comment
+	Changes                 []Change
 }
 
 // Category is the normalized kind of engineering work.

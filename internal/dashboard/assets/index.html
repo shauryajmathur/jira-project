@@ -27,6 +27,7 @@
           <option value="">All spaces</option>
         </select>
       </label>
+      <button class="button button-secondary" id="custom-button" type="button">Custom PDF</button>
       <a class="button button-secondary" id="download-pdf" href="/report.pdf">Download PDF</a>
       <button class="button button-primary" id="refresh-button" type="button">
         <span class="refresh-icon" aria-hidden="true"></span>
@@ -127,6 +128,22 @@
       </aside>
     </div>
 
+    <section class="panel activity-map-panel" aria-labelledby="activity-map-title">
+      <div class="panel-heading activity-map-heading">
+        <div>
+          <p class="section-kicker">People distribution</p>
+          <h2 id="activity-map-title">Activities per person</h2>
+        </div>
+        <p class="activity-map-note">Recorded Jira actions in this period</p>
+      </div>
+      <details class="activity-definitions">
+        <summary>What counts as an activity?</summary>
+        <div class="activity-definition-list" id="activity-definition-list"></div>
+      </details>
+      <div class="activity-map" id="activity-map" role="group" aria-label="People grouped by activity count"></div>
+      <div class="activity-map-detail" id="activity-map-detail" aria-live="polite"></div>
+    </section>
+
     <section class="panel activity-panel" aria-labelledby="activity-title">
       <div class="panel-heading activity-heading">
         <div>
@@ -169,5 +186,37 @@
     </section>
 
   </main>
+
+  <dialog class="custom-dialog" id="custom-dialog" aria-labelledby="custom-title">
+    <form class="custom-form" id="custom-form">
+      <div class="custom-dialog-head">
+        <div>
+          <p class="section-kicker">Agent export</p>
+          <h2 id="custom-title">Generate custom PDF</h2>
+        </div>
+        <button class="custom-close" id="custom-close" type="button" aria-label="Close custom file generator">×</button>
+      </div>
+      <p class="custom-context" id="custom-context">Current dashboard scope</p>
+      <label class="custom-provider-label" for="custom-provider">
+        <span>Agent</span>
+        <select id="custom-provider"></select>
+      </label>
+      <label class="custom-prompt-label" for="custom-prompt">
+        <span>What should the agent make?</span>
+        <textarea id="custom-prompt" maxlength="8000" rows="7" placeholder="Create a PDF briefing on the biggest delivery risks, using issue details and comments where they add useful context." required></textarea>
+      </label>
+      <div class="custom-actions">
+        <button class="button button-primary" id="generate-custom" type="submit" disabled>Generate PDF</button>
+      </div>
+      <section class="custom-results" id="custom-results" aria-live="polite" hidden>
+        <div class="custom-result-head">
+          <strong id="custom-result-state">Queued</strong>
+          <span id="custom-result-time"></span>
+        </div>
+        <p id="custom-result-summary"></p>
+        <div class="custom-file-list" id="custom-file-list"></div>
+      </section>
+    </form>
+  </dialog>
 </body>
 </html>

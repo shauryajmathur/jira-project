@@ -287,7 +287,7 @@ func (r *pdfReport) writeDataQuality(result analytics.Result) {
 	r.pdf.Ln(3)
 	r.pdf.SetFont("DejaVu", "I", 8)
 	r.pdf.SetTextColor(80, 80, 80)
-	r.pdf.MultiCell(0, 4, r.text("Sprint utilization is total Jira worklog time in the reporting period. Team capacity compares planned estimates by assignee with recorded time by worklog author; it does not represent theoretical availability or productivity."), "", "L", false)
+	r.pdf.MultiCell(0, 4, r.text("Sprint utilization is total Jira worklog time in the reporting period. Team capacity compares planned estimates by assignee with recorded time by worklog author."), "", "L", false)
 }
 
 func (r *pdfReport) section(title string) {

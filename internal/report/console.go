@@ -21,9 +21,7 @@ func PrintConsole(output io.Writer, result analytics.Result, mode, jql string) e
 		result.Period.End.AddDate(0, 0, -1).Format("02 Jan 2006"),
 		result.BusinessDays,
 	)
-	if mode != "demo data" {
-		fmt.Fprintf(writer, "JQL:\t%s\n", oneLine(jql))
-	}
+	fmt.Fprintf(writer, "JQL:\t%s\n", oneLine(jql))
 
 	section(writer, "TEAM SUMMARY")
 	fmt.Fprintf(writer, "Tracked resources:\t%d\n", len(result.Engineers))

@@ -1,4 +1,4 @@
-// Package jira reads issues and worklogs from the Jira Cloud REST API v3.
+// Package jira reads issues and their activity from the Jira Cloud REST API v3.
 package jira
 
 import (
@@ -48,13 +48,13 @@ func NewClient(baseURL, email, token string, parallelism int) (*Client, error) {
 	}, nil
 }
 
-// FetchIssues searches Jira and then fetches every issue's paginated worklogs.
+// FetchIssues searches Jira and then completes any paginated issue activity.
 func (c *Client) FetchIssues(ctx context.Context, jql string, period model.Period) ([]model.Issue, error) {
 	issues, err := c.searchIssues(ctx, jql)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.attachWorklogs(ctx, issues, period); err != nil {
+	if err := c.attachIssueDetails(ctx, issues, period); err != nil {
 		return nil, err
 	}
 	return issues, nil
@@ -73,12 +73,16 @@ type jiraUser struct {
 }
 
 type searchIssue struct {
+	ID     string `json:"id"`
 	Key    string `json:"key"`
 	Fields struct {
 		Summary              string    `json:"summary"`
 		IssueType            namedItem `json:"issuetype"`
 		Project              keyedItem `json:"project"`
 		Assignee             *jiraUser `json:"assignee"`
+		Creator              *jiraUser `json:"creator"`
+		Created              string    `json:"created"`
+		Updated              string    `json:"updated"`
 		Labels               []string  `json:"labels"`
 		TimeOriginalEstimate int64     `json:"timeoriginalestimate"`
 	} `json:"fields"`
@@ -103,7 +107,7 @@ func (c *Client) searchIssues(ctx context.Context, jql string) ([]model.Issue, e
 	request := searchRequest{
 		JQL:        jql,
 		MaxResults: pageSize,
-		Fields:     []string{"summary", "issuetype", "project", "assignee", "labels", "timeoriginalestimate"},
+		Fields:     []string{"summary", "issuetype", "project", "assignee", "creator", "created", "updated", "labels", "timeoriginalestimate"},
 	}
 	var issues []model.Issue
 	seenTokens := make(map[string]struct{})
@@ -114,6 +118,7 @@ func (c *Client) searchIssues(ctx context.Context, jql string) ([]model.Issue, e
 		}
 		for _, item := range response.Issues {
 			issue := model.Issue{
+				ID:                      item.ID,
 				Key:                     item.Key,
 				Summary:                 item.Fields.Summary,
 				Type:                    item.Fields.IssueType.Name,
@@ -125,6 +130,19 @@ func (c *Client) searchIssues(ctx context.Context, jql string) ([]model.Issue, e
 			if item.Fields.Assignee != nil {
 				issue.Assignee = user(*item.Fields.Assignee)
 			}
+			if item.Fields.Creator != nil {
+				issue.Creator = user(*item.Fields.Creator)
+			}
+			created, err := optionalJiraTime(item.Fields.Created)
+			if err != nil {
+				return nil, fmt.Errorf("issue %s created: %w", item.Key, err)
+			}
+			issue.Created = created
+			updated, err := optionalJiraTime(item.Fields.Updated)
+			if err != nil {
+				return nil, fmt.Errorf("issue %s updated: %w", item.Key, err)
+			}
+			issue.Updated = updated
 			issues = append(issues, issue)
 		}
 		if response.IsLast || response.NextPageToken == "" {
@@ -139,7 +157,63 @@ func (c *Client) searchIssues(ctx context.Context, jql string) ([]model.Issue, e
 	return issues, nil
 }
 
-func (c *Client) attachWorklogs(ctx context.Context, issues []model.Issue, period model.Period) error {
+type commentPage struct {
+	StartAt    int           `json:"startAt"`
+	Total      int           `json:"total"`
+	MaxResults int           `json:"maxResults"`
+	Items      []jiraComment `json:"comments"`
+}
+
+type jiraComment struct {
+	Author       jiraUser `json:"author"`
+	Created      string   `json:"created"`
+	UpdateAuthor jiraUser `json:"updateAuthor"`
+	Updated      string   `json:"updated"`
+}
+
+type jiraChange struct {
+	Author  jiraUser         `json:"author"`
+	Created json.RawMessage  `json:"created"`
+	Items   []jiraChangeItem `json:"items"`
+}
+
+type jiraChangeItem struct {
+	Field string `json:"field"`
+}
+
+func comments(items []jiraComment) ([]model.Comment, error) {
+	result := make([]model.Comment, 0, len(items))
+	for _, item := range items {
+		created, err := parseJiraTime(item.Created)
+		if err != nil {
+			return nil, fmt.Errorf("parse created time: %w", err)
+		}
+		updated, err := parseJiraTime(item.Updated)
+		if err != nil {
+			return nil, fmt.Errorf("parse updated time: %w", err)
+		}
+		result = append(result, model.Comment{Author: user(item.Author), Created: created, UpdateAuthor: user(item.UpdateAuthor), Updated: updated})
+	}
+	return result, nil
+}
+
+func changes(items []jiraChange) ([]model.Change, error) {
+	result := make([]model.Change, 0, len(items))
+	for _, item := range items {
+		created, err := parseJiraTimestamp(item.Created)
+		if err != nil {
+			return nil, fmt.Errorf("parse created time: %w", err)
+		}
+		fields := make([]string, 0, len(item.Items))
+		for _, changed := range item.Items {
+			fields = append(fields, changed.Field)
+		}
+		result = append(result, model.Change{Author: user(item.Author), Created: created, Fields: fields})
+	}
+	return result, nil
+}
+
+func (c *Client) attachIssueDetails(ctx context.Context, issues []model.Issue, period model.Period) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -162,6 +236,14 @@ func (c *Client) attachWorklogs(ctx context.Context, issues []model.Issue, perio
 					return
 				}
 				issues[index].Worklogs = worklogs
+				if !issues[index].Updated.Before(period.Start) {
+					issueComments, err := c.issueComments(ctx, issues[index].Key)
+					if err != nil {
+						sendFetchError(errors, cancel, issues[index].Key, "comments", err)
+						return
+					}
+					issues[index].Comments = issueComments
+				}
 			}
 		}()
 	}
@@ -180,13 +262,21 @@ func (c *Client) attachWorklogs(ctx context.Context, issues []model.Issue, perio
 	workers.Wait()
 	select {
 	case err := <-errors:
-		return fmt.Errorf("fetch worklogs: %w", err)
+		return fmt.Errorf("fetch issue details: %w", err)
 	default:
 	}
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("fetch worklogs: %w", err)
+		return fmt.Errorf("fetch issue details: %w", err)
 	}
-	return nil
+	return c.attachChanges(ctx, issues, period)
+}
+
+func sendFetchError(errors chan<- error, cancel context.CancelFunc, issueKey, detail string, err error) {
+	select {
+	case errors <- fmt.Errorf("issue %s %s: %w", issueKey, detail, err):
+	default:
+	}
+	cancel()
 }
 
 type worklogResponse struct {
@@ -235,6 +325,88 @@ func (c *Client) issueWorklogs(ctx context.Context, issueKey string, period mode
 	return worklogs, nil
 }
 
+func (c *Client) issueComments(ctx context.Context, issueKey string) ([]model.Comment, error) {
+	startAt := 0
+	var result []model.Comment
+	for {
+		query := url.Values{}
+		query.Set("startAt", strconv.Itoa(startAt))
+		query.Set("maxResults", strconv.Itoa(pageSize))
+		path := "/rest/api/3/issue/" + url.PathEscape(issueKey) + "/comment"
+		var response commentPage
+		if err := c.doJSON(ctx, http.MethodGet, path, query, nil, &response); err != nil {
+			return nil, err
+		}
+		page, err := comments(response.Items)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, page...)
+		startAt += len(response.Items)
+		if startAt >= response.Total || len(response.Items) == 0 {
+			return result, nil
+		}
+	}
+}
+
+type bulkChangeRequest struct {
+	IssueIDsOrKeys []string `json:"issueIdsOrKeys"`
+	MaxResults     int      `json:"maxResults"`
+	NextPageToken  string   `json:"nextPageToken,omitempty"`
+}
+
+type issueChanges struct {
+	IssueID string       `json:"issueId"`
+	Items   []jiraChange `json:"changeHistories"`
+}
+
+type bulkChangeResponse struct {
+	Issues        []issueChanges `json:"issueChangeLogs"`
+	NextPageToken string         `json:"nextPageToken"`
+}
+
+func (c *Client) attachChanges(ctx context.Context, issues []model.Issue, period model.Period) error {
+	request := bulkChangeRequest{MaxResults: 250}
+	byID := make(map[string]int)
+	for index := range issues {
+		if issues[index].Updated.Before(period.Start) {
+			continue
+		}
+		request.IssueIDsOrKeys = append(request.IssueIDsOrKeys, issues[index].Key)
+		byID[issues[index].ID] = index
+	}
+	if len(request.IssueIDsOrKeys) == 0 {
+		return nil
+	}
+
+	seenTokens := make(map[string]struct{})
+	for {
+		var response bulkChangeResponse
+		if err := c.doJSON(ctx, http.MethodPost, "/rest/api/3/changelog/bulkfetch", nil, request, &response); err != nil {
+			return fmt.Errorf("fetch changelogs: %w", err)
+		}
+		for _, issue := range response.Issues {
+			index, ok := byID[issue.IssueID]
+			if !ok {
+				continue
+			}
+			page, err := changes(issue.Items)
+			if err != nil {
+				return fmt.Errorf("issue %s changelog: %w", issues[index].Key, err)
+			}
+			issues[index].Changes = append(issues[index].Changes, page...)
+		}
+		if response.NextPageToken == "" {
+			return nil
+		}
+		if _, seen := seenTokens[response.NextPageToken]; seen {
+			return fmt.Errorf("fetch changelogs: Jira repeated a pagination token")
+		}
+		seenTokens[response.NextPageToken] = struct{}{}
+		request.NextPageToken = response.NextPageToken
+	}
+}
+
 func user(item jiraUser) model.User {
 	return model.User{AccountID: item.AccountID, Name: item.DisplayName}
 }
@@ -247,6 +419,25 @@ func parseJiraTime(value string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("unsupported Jira timestamp")
+}
+
+func optionalJiraTime(value string) (time.Time, error) {
+	if strings.TrimSpace(value) == "" {
+		return time.Time{}, nil
+	}
+	return parseJiraTime(value)
+}
+
+func parseJiraTimestamp(value json.RawMessage) (time.Time, error) {
+	var text string
+	if err := json.Unmarshal(value, &text); err == nil {
+		return parseJiraTime(text)
+	}
+	var milliseconds int64
+	if err := json.Unmarshal(value, &milliseconds); err != nil {
+		return time.Time{}, fmt.Errorf("unsupported Jira timestamp")
+	}
+	return time.UnixMilli(milliseconds), nil
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, query url.Values, input, output any) error {

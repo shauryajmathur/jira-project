@@ -11,17 +11,19 @@ import (
 )
 
 type payload struct {
-	UpdatedAt     time.Time          `json:"updatedAt"`
-	Source        string             `json:"source"`
-	Stale         bool               `json:"stale"`
-	Warning       string             `json:"warning,omitempty"`
-	SelectedSpace string             `json:"selectedSpace,omitempty"`
-	Spaces        []spacePayload     `json:"spaces"`
-	Period        periodPayload      `json:"period"`
-	Summary       summaryPayload     `json:"summary"`
-	Engineers     []engineerPayload  `json:"engineers"`
-	Categories    []breakdownPayload `json:"categories"`
-	Projects      []breakdownPayload `json:"projects"`
+	UpdatedAt      time.Time               `json:"updatedAt"`
+	Source         string                  `json:"source"`
+	Stale          bool                    `json:"stale"`
+	Warning        string                  `json:"warning,omitempty"`
+	SelectedSpace  string                  `json:"selectedSpace,omitempty"`
+	Spaces         []spacePayload          `json:"spaces"`
+	Period         periodPayload           `json:"period"`
+	Summary        summaryPayload          `json:"summary"`
+	Engineers      []engineerPayload       `json:"engineers"`
+	ActivityPeople []activityPersonPayload `json:"activityPeople"`
+	ActivityTypes  []activityTypePayload   `json:"activityTypes"`
+	Categories     []breakdownPayload      `json:"categories"`
+	Projects       []breakdownPayload      `json:"projects"`
 }
 
 type spacePayload struct {
@@ -71,6 +73,26 @@ type activityPayload struct {
 	PlannedHours float64 `json:"plannedHours"`
 }
 
+type activityPersonPayload struct {
+	ID            string                     `json:"id"`
+	Name          string                     `json:"name"`
+	ActivityCount int                        `json:"activityCount"`
+	Types         []activityTypeCountPayload `json:"types"`
+}
+
+type activityTypeCountPayload struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	Count int    `json:"count"`
+}
+
+type activityTypePayload struct {
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Description string `json:"description"`
+	Count       int    `json:"count"`
+}
+
 type breakdownPayload struct {
 	Name          string  `json:"name"`
 	ActualHours   float64 `json:"actualHours"`
@@ -109,6 +131,7 @@ func makePayload(data snapshot.Data, allIssues []model.Issue, selectedSpace stri
 	for _, engineer := range result.Engineers {
 		response.Engineers = append(response.Engineers, makeEngineer(engineer))
 	}
+	response.ActivityPeople, response.ActivityTypes = makeActivitySummary(data.Issues, result.Engineers, result.Period)
 	for _, category := range result.Categories {
 		response.Categories = append(response.Categories, makeBreakdown(category))
 	}
@@ -116,6 +139,123 @@ func makePayload(data snapshot.Data, allIssues []model.Issue, selectedSpace stri
 		response.Projects = append(response.Projects, makeBreakdown(project))
 	}
 	return response
+}
+
+var activityDefinitions = []activityTypePayload{
+	{ID: "issue-created", Label: "Created an issue", Description: "Created a Jira issue or ticket."},
+	{ID: "work-logged", Label: "Logged work", Description: "Submitted one worklog entry."},
+	{ID: "comment-added", Label: "Added a comment", Description: "Posted one comment on an issue."},
+	{ID: "comment-edited", Label: "Edited a comment", Description: "Saved a later edit to an existing comment."},
+	{ID: "status-changed", Label: "Changed status", Description: "Moved an issue to another workflow status."},
+	{ID: "assignee-changed", Label: "Changed assignee", Description: "Assigned or reassigned an issue."},
+	{ID: "sprint-changed", Label: "Changed sprint", Description: "Added, removed, or moved an issue between sprints."},
+	{ID: "estimate-changed", Label: "Changed estimate", Description: "Updated an original or remaining estimate."},
+	{ID: "priority-changed", Label: "Changed priority", Description: "Updated an issue's priority."},
+	{ID: "attachment-changed", Label: "Changed attachment", Description: "Added or removed an attachment."},
+	{ID: "link-changed", Label: "Changed issue link", Description: "Added or removed a relationship between issues."},
+	{ID: "details-updated", Label: "Updated issue details", Description: "Changed another tracked issue field, such as its summary, description, labels, or components."},
+}
+
+type activityPersonBuilder struct {
+	ID    string
+	Name  string
+	Count int
+	Types map[string]int
+}
+
+func makeActivitySummary(issues []model.Issue, engineers []analytics.Engineer, period model.Period) ([]activityPersonPayload, []activityTypePayload) {
+	people := make(map[string]*activityPersonBuilder)
+	for _, engineer := range engineers {
+		people[engineer.ID] = &activityPersonBuilder{ID: engineer.ID, Name: engineer.Name, Types: make(map[string]int)}
+	}
+	totals := make(map[string]int)
+	add := func(actor model.User, occurred time.Time, kind string) {
+		if kind == "" || !period.Contains(occurred) || actor.AccountID == "" && strings.TrimSpace(actor.Name) == "" {
+			return
+		}
+		name := strings.TrimSpace(actor.Name)
+		if name == "" {
+			name = "Unknown user"
+		}
+		id := actor.AccountID
+		if id == "" {
+			id = "name:" + strings.ToLower(name)
+		}
+		person := people[id]
+		if person == nil {
+			person = &activityPersonBuilder{ID: id, Name: name, Types: make(map[string]int)}
+			people[id] = person
+		}
+		person.Count++
+		person.Types[kind]++
+		totals[kind]++
+	}
+
+	for _, issue := range issues {
+		add(issue.Creator, issue.Created, "issue-created")
+		for _, comment := range issue.Comments {
+			add(comment.Author, comment.Created, "comment-added")
+			if comment.Updated.After(comment.Created) {
+				add(comment.UpdateAuthor, comment.Updated, "comment-edited")
+			}
+		}
+		for _, change := range issue.Changes {
+			add(change.Author, change.Created, classifyChange(change.Fields))
+		}
+	}
+
+	result := make([]activityPersonPayload, 0, len(people))
+	for _, person := range people {
+		value := activityPersonPayload{ID: person.ID, Name: person.Name, ActivityCount: person.Count, Types: []activityTypeCountPayload{}}
+		for _, definition := range activityDefinitions {
+			if count := person.Types[definition.ID]; count > 0 {
+				value.Types = append(value.Types, activityTypeCountPayload{ID: definition.ID, Label: definition.Label, Count: count})
+			}
+		}
+		result = append(result, value)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].ActivityCount == result[j].ActivityCount {
+			return result[i].Name < result[j].Name
+		}
+		return result[i].ActivityCount > result[j].ActivityCount
+	})
+
+	definitions := make([]activityTypePayload, len(activityDefinitions))
+	copy(definitions, activityDefinitions)
+	for index := range definitions {
+		definitions[index].Count = totals[definitions[index].ID]
+	}
+	return result, definitions
+}
+
+func classifyChange(fields []string) string {
+	changed := make(map[string]bool, len(fields))
+	for _, field := range fields {
+		changed[strings.ToLower(strings.TrimSpace(field))] = true
+	}
+	switch {
+	case changed["comment"]:
+		return ""
+	case changed["worklogid"]:
+		return "work-logged"
+	case changed["status"]:
+		return "status-changed"
+	case changed["assignee"]:
+		return "assignee-changed"
+	case changed["sprint"]:
+		return "sprint-changed"
+	case changed["timeoriginalestimate"] || changed["timeestimate"] || changed["story points"] || changed["story point estimate"]:
+		return "estimate-changed"
+	case changed["priority"]:
+		return "priority-changed"
+	case changed["attachment"]:
+		return "attachment-changed"
+	case changed["issuelinks"] || changed["link"]:
+		return "link-changed"
+	default:
+		return "details-updated"
+	}
 }
 
 func makeSpaces(issues []model.Issue) []spacePayload {
@@ -153,6 +293,7 @@ func makeEngineer(engineer analytics.Engineer) engineerPayload {
 		VarianceHours:        hours(engineer.ActualSeconds - engineer.PlannedSeconds),
 		ShareOfSprintPercent: engineer.ShareOfSprint,
 		WorkedIssueCount:     engineer.WorkedIssueCount,
+		Activities:           []activityPayload{},
 	}
 	for _, activity := range engineer.Activities {
 		value.Activities = append(value.Activities, activityPayload{

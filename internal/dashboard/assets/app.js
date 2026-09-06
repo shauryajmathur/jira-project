@@ -9,6 +9,12 @@ const state = {
   refreshedAt: 0,
   refreshing: false,
   pendingReload: false,
+  agentReady: false,
+  providers: [],
+  selectedProvider: "",
+  customJobID: "",
+  customPoll: 0,
+  selectedActivityCount: null,
 };
 
 const byId = (id) => document.getElementById(id);
@@ -33,8 +39,22 @@ function formatPercent(value) {
   return `${value.toFixed(1)}%`;
 }
 
+function formatBytes(value) {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function countLabel(count, noun) {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function activityLabel(count) {
+  return `${count} ${count === 1 ? "activity" : "activities"}`;
+}
+
+function peopleLabel(count) {
+  return `${count} ${count === 1 ? "person" : "people"}`;
 }
 
 function formatDate(dateString) {
@@ -48,6 +68,34 @@ function formatDate(dateString) {
 
 function categoryClass(category) {
   return category.toLowerCase().replaceAll(" ", "-");
+}
+
+function contributorWorkType(category) {
+  if (category === "Story" || category === "Bug") return category;
+  return "Other";
+}
+
+function contributorTypeSummary(activities, totalHours, selectedType) {
+  const shown = activities.filter((activity) => selectedType === "All" || contributorWorkType(activity.category) === selectedType);
+  const hours = shown.reduce((total, activity) => total + activity.actualHours, 0);
+  return {
+    shown,
+    hours,
+    share: totalHours > 0 ? hours / totalHours * 100 : 0,
+  };
+}
+
+function activityBuckets(people) {
+  const groups = new Map();
+  for (const person of people) {
+    const count = person.activityCount;
+    if (!groups.has(count)) groups.set(count, []);
+    groups.get(count).push(person);
+  }
+  return Array.from(groups, ([count, people]) => ({
+    count,
+    people: people.sort((a, b) => a.name.localeCompare(b.name)),
+  })).sort((a, b) => a.count - b.count);
 }
 
 function showMessage(text, isError = false) {
@@ -113,6 +161,116 @@ function renderSummary(report) {
     : `${countLabel(summary.trackedResources, "tracked resource")} represented`;
   byId("issues-worked").textContent = `${summary.workedIssueCount} / ${summary.issueCount}`;
   byId("issues-detail").textContent = "Worked issues / selected sprint issues";
+  byId("custom-context").textContent = `${scope} · ${formatDate(report.period.start)} – ${formatDate(report.period.end)}`;
+}
+
+async function loadCustomCapability() {
+  const generate = byId("generate-custom");
+  generate.disabled = true;
+  try {
+    const response = await fetch("/api/custom/status", { headers: { Accept: "application/json" } });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+    state.providers = body.providers || [];
+    const select = byId("custom-provider");
+    const options = state.providers.map((provider) => {
+      const suffix = provider.ready ? "" : ` (${provider.message})`;
+      const option = element("option", "", `${provider.name}${suffix}`);
+      option.value = provider.id;
+      return option;
+    });
+    select.replaceChildren(...options);
+    const previous = state.providers.find((provider) => provider.id === state.selectedProvider && provider.ready);
+    const firstReady = state.providers.find((provider) => provider.ready);
+    state.selectedProvider = previous?.id || firstReady?.id || state.providers[0]?.id || "";
+    select.value = state.selectedProvider;
+    renderProviderCapability();
+  } catch {
+    state.agentReady = false;
+    state.providers = [];
+    byId("custom-provider").replaceChildren();
+    generate.disabled = true;
+  }
+}
+
+function renderProviderCapability() {
+  const provider = state.providers.find((candidate) => candidate.id === byId("custom-provider").value);
+  state.selectedProvider = provider?.id || "";
+  state.agentReady = Boolean(provider?.ready);
+  byId("generate-custom").disabled = !state.agentReady;
+}
+
+function renderCustomJob(job) {
+  const running = job.status === "queued" || job.status === "running";
+  byId("custom-results").hidden = false;
+  byId("custom-result-state").textContent = job.status === "completed"
+    ? "PDF ready"
+    : job.status === "failed"
+      ? "Generation failed"
+      : job.status === "running" ? `${job.providerName || "Agent"} is generating` : "Queued";
+  byId("custom-results").className = `custom-results status-${job.status}`;
+  byId("custom-result-time").textContent = new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(job.updatedAt));
+  byId("custom-result-summary").textContent = job.error || job.summary || (running ? "This can take a few minutes. You can leave this window open." : "");
+  const links = (job.files || []).map((file) => {
+    const link = element("a", "custom-file-link");
+    link.href = file.url;
+    link.download = file.name.split("/").at(-1);
+    link.append(
+      element("span", "custom-file-name", file.name),
+      element("span", "custom-file-size", formatBytes(file.size)),
+    );
+    return link;
+  });
+  byId("custom-file-list").replaceChildren(...links);
+  byId("generate-custom").disabled = running || !state.agentReady;
+  byId("custom-prompt").disabled = running;
+  byId("custom-provider").disabled = running;
+
+  window.clearTimeout(state.customPoll);
+  if (running) state.customPoll = window.setTimeout(() => loadCustomJob(job.id), 1800);
+}
+
+async function loadCustomJob(id) {
+  try {
+    const response = await fetch(`/api/custom/${encodeURIComponent(id)}`, { headers: { Accept: "application/json" } });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+    renderCustomJob(body);
+  } catch (error) {
+    renderCustomJob({ id, status: "failed", updatedAt: new Date().toISOString(), error: error.message, files: [] });
+  }
+}
+
+async function createCustomFiles(event) {
+  event.preventDefault();
+  const prompt = byId("custom-prompt").value.trim();
+  if (!prompt || !state.report || !state.agentReady || !state.selectedProvider) return;
+  byId("generate-custom").disabled = true;
+  byId("custom-prompt").disabled = true;
+  byId("custom-provider").disabled = true;
+  try {
+    const response = await fetch("/api/custom", {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: state.selectedProvider,
+        prompt,
+        space: state.selectedSpace,
+        start: state.startDate,
+        end: state.endDate,
+      }),
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+    state.customJobID = body.id;
+    renderCustomJob(body);
+  } catch (error) {
+    renderCustomJob({ id: "", status: "failed", updatedAt: new Date().toISOString(), error: error.message, files: [] });
+  }
 }
 
 function refreshSpaceFilter(spaces, selectedSpace) {
@@ -176,11 +334,25 @@ function renderEngineers(engineers) {
     detailRow.hidden = true;
     const detailCell = element("td", "contributor-detail-cell");
     detailCell.colSpan = 6;
-    const activities = engineer.activities.filter((activity) => activity.actualHours > 0 || activity.plannedHours > 0);
+    const activities = engineer.activities.filter((activity) => activity.actualHours > 0);
     const detailHead = element("div", "contributor-detail-head");
+    const detailSummary = element("div", "contributor-detail-summary");
+    const detailTitle = element("strong");
+    const detailMetric = element("span", "contributor-type-metric");
+    detailSummary.append(detailTitle, detailMetric);
+    const typeFilterLabel = element("label", "contributor-type-filter");
+    typeFilterLabel.append(element("span", "", "Work type"));
+    const typeFilter = element("select");
+    typeFilter.setAttribute("aria-label", `Filter ${engineer.name}'s issues by work type`);
+    for (const type of ["All", "Story", "Bug", "Other"]) {
+      const option = element("option", "", type === "All" ? "All work types" : type);
+      option.value = type;
+      typeFilter.append(option);
+    }
+    typeFilterLabel.append(typeFilter);
     detailHead.append(
-      element("strong", "", `${engineer.name} · ${countLabel(activities.length, "tracked issue")}`),
-      element("span", "", `${formatHours(engineer.timeSpentHours)} recorded · ${formatHours(engineer.plannedHours)} planned`),
+      detailSummary,
+      typeFilterLabel,
     );
     const detailWrap = element("div", "contributor-work-wrap");
     const detailTable = element("table", "contributor-work-table");
@@ -193,21 +365,31 @@ function renderEngineers(engineers) {
     }
     tableHead.append(headingRow);
     const tableBody = element("tbody");
-    for (const activity of activities) {
-      const activityRow = element("tr");
-      const category = element("span", `category-tag ${categoryClass(activity.category)}`, activity.category);
-      const categoryCell = element("td");
-      categoryCell.append(category);
-      activityRow.append(
-        element("td", "issue-key", activity.issueKey),
-        element("td", "contributor-work-summary", activity.summary),
-        element("td", "numeric", activity.projectKey),
-        categoryCell,
-        element("td", "numeric", formatHours(activity.actualHours)),
-        element("td", "numeric", formatHours(activity.plannedHours)),
-      );
-      tableBody.append(activityRow);
-    }
+    const renderContributorActivities = () => {
+      const selectedType = typeFilter.value;
+      const summary = contributorTypeSummary(activities, engineer.timeSpentHours, selectedType);
+      detailTitle.textContent = `${engineer.name} · ${countLabel(summary.shown.length, "worked issue")}`;
+      detailMetric.textContent = `${selectedType === "All" ? "All work" : selectedType} · ${formatPercent(summary.share)} of recorded time · ${formatHours(summary.hours)}`;
+
+      const activityRows = summary.shown.map((activity) => {
+        const activityRow = element("tr");
+        const category = element("span", `category-tag ${categoryClass(activity.category)}`, activity.category);
+        const categoryCell = element("td");
+        categoryCell.append(category);
+        activityRow.append(
+          element("td", "issue-key", activity.issueKey),
+          element("td", "contributor-work-summary", activity.summary),
+          element("td", "numeric", activity.projectKey),
+          categoryCell,
+          element("td", "numeric", formatHours(activity.actualHours)),
+          element("td", "numeric", formatHours(activity.plannedHours)),
+        );
+        return activityRow;
+      });
+      tableBody.replaceChildren(...(activityRows.length ? activityRows : [emptyRow(6, `No ${selectedType === "All" ? "worked" : selectedType} issues for this contributor.`)]));
+    };
+    typeFilter.addEventListener("change", renderContributorActivities);
+    renderContributorActivities();
     detailTable.append(tableHead, tableBody);
     detailWrap.append(detailTable);
     detailCell.append(detailHead, detailWrap);
@@ -255,6 +437,79 @@ function renderProjects(projects) {
     return row;
   });
   replaceChildren("project-list", rows.length ? rows : [element("p", "empty-row", "No project data available.")]);
+}
+
+function activityTypeSummary(types) {
+  if (!types.length) return "No recorded Jira actions";
+  return types.map((type) => `${type.count} ${type.label.toLowerCase()}`).join(" · ");
+}
+
+function renderActivityDefinitions(types) {
+  const definitions = types.map((type) => {
+    const item = element("div", "activity-definition");
+    item.append(
+      element("strong", "", type.label),
+      element("span", "", type.description),
+      element("span", "activity-definition-count", activityLabel(type.count)),
+    );
+    return item;
+  });
+  replaceChildren("activity-definition-list", definitions);
+}
+
+function renderActivityMap(people) {
+  const buckets = activityBuckets(people);
+  if (!buckets.length) {
+    replaceChildren("activity-map", [element("p", "empty-row", "No contributors were found in the selected issues.")]);
+    byId("activity-map-detail").replaceChildren();
+    return;
+  }
+
+  if (!buckets.some((bucket) => bucket.count === state.selectedActivityCount)) {
+    state.selectedActivityCount = buckets.some((bucket) => bucket.count === 0) ? 0 : buckets[0].count;
+  }
+
+  const renderSelection = () => {
+    const selected = buckets.find((bucket) => bucket.count === state.selectedActivityCount);
+    const heading = element("div", "activity-map-detail-heading");
+    heading.append(
+      element("strong", "", `${activityLabel(selected.count)} · ${peopleLabel(selected.people.length)}`),
+      element("span", "", "Click another group to compare"),
+    );
+    const people = element("div", "activity-map-people");
+    for (const personData of selected.people) {
+      const person = element("div", "activity-map-person");
+      person.append(
+        element("strong", "", personData.name),
+        element("span", "", activityTypeSummary(personData.types)),
+      );
+      people.append(person);
+    }
+    byId("activity-map-detail").replaceChildren(heading, people);
+  };
+
+  const buttons = buckets.map((bucket) => {
+    const button = element("button", "activity-map-bucket");
+    button.type = "button";
+    button.style.setProperty("--bucket-size", Math.max(bucket.people.length, 1));
+    button.setAttribute("aria-pressed", String(bucket.count === state.selectedActivityCount));
+    button.setAttribute("aria-label", `${peopleLabel(bucket.people.length)} with ${activityLabel(bucket.count)}`);
+    button.append(
+      element("strong", "activity-map-count", String(bucket.count)),
+      element("span", "activity-map-label", bucket.count === 1 ? "activity" : "activities"),
+      element("span", "activity-map-total", peopleLabel(bucket.people.length)),
+    );
+    button.addEventListener("click", () => {
+      state.selectedActivityCount = bucket.count;
+      for (const item of byId("activity-map").children) {
+        item.setAttribute("aria-pressed", String(item === button));
+      }
+      renderSelection();
+    });
+    return button;
+  });
+  replaceChildren("activity-map", buttons);
+  renderSelection();
 }
 
 function refreshEngineerFilter(engineers) {
@@ -323,6 +578,8 @@ function render(report) {
   renderEngineers(report.engineers);
   renderCategories(report.categories);
   renderProjects(report.projects);
+  renderActivityDefinitions(report.activityTypes);
+  renderActivityMap(report.activityPeople);
   refreshEngineerFilter(report.engineers);
   renderActivities();
   showMessage(report.warning || "");
@@ -376,6 +633,16 @@ function updateCountdown() {
 }
 
 byId("refresh-button").addEventListener("click", () => loadReport(true));
+byId("custom-button").addEventListener("click", () => {
+  const dialog = byId("custom-dialog");
+  if (!dialog.open) dialog.showModal();
+  loadCustomCapability();
+  if (state.customJobID) loadCustomJob(state.customJobID);
+});
+byId("custom-close").addEventListener("click", () => byId("custom-dialog").close());
+byId("custom-dialog").addEventListener("close", () => window.clearTimeout(state.customPoll));
+byId("custom-form").addEventListener("submit", createCustomFiles);
+byId("custom-provider").addEventListener("change", renderProviderCapability);
 byId("apply-period").addEventListener("click", () => {
   const start = byId("period-start").value;
   const end = byId("period-end").value;

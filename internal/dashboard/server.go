@@ -5,10 +5,12 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	"jira-project/internal/config"
+	"jira-project/internal/customgen"
 	"jira-project/internal/model"
 	"jira-project/internal/report"
 	"jira-project/internal/snapshot"
@@ -29,6 +32,7 @@ var assetFiles embed.FS
 type Server struct {
 	cfg        config.Config
 	outputPath string
+	custom     *customgen.Manager
 	now        func() time.Time
 
 	mu        sync.RWMutex
@@ -40,9 +44,17 @@ type Server struct {
 }
 
 func New(cfg config.Config, outputPath string) http.Handler {
-	server := &Server{cfg: cfg, outputPath: outputPath, now: time.Now}
+	return newHandler(cfg, outputPath, customgen.New(customOutputDir(outputPath), cfg))
+}
+
+func newHandler(cfg config.Config, outputPath string, custom *customgen.Manager) http.Handler {
+	server := &Server{cfg: cfg, outputPath: outputPath, custom: custom, now: time.Now}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/report", server.reportJSON)
+	mux.HandleFunc("GET /api/custom/status", server.customStatus)
+	mux.HandleFunc("POST /api/custom", server.createCustom)
+	mux.HandleFunc("GET /api/custom/{id}", server.customJob)
+	mux.HandleFunc("GET /api/custom/{id}/files/{path...}", server.customFile)
 	mux.HandleFunc("GET /report.pdf", server.reportPDF)
 	mux.HandleFunc("GET /healthz", server.health)
 
@@ -52,6 +64,131 @@ func New(cfg config.Config, outputPath string) http.Handler {
 	}
 	mux.Handle("GET /", http.FileServerFS(assets))
 	return securityHeaders(localRequestsOnly(mux))
+}
+
+type customRequest struct {
+	Provider string `json:"provider"`
+	Prompt   string `json:"prompt"`
+	Space    string `json:"space"`
+	Start    string `json:"start"`
+	End      string `json:"end"`
+}
+
+func (s *Server) customStatus(writer http.ResponseWriter, request *http.Request) {
+	ctx, cancel := context.WithTimeout(request.Context(), 10*time.Second)
+	defer cancel()
+	writeJSON(writer, http.StatusOK, s.custom.Status(ctx))
+}
+
+func (s *Server) createCustom(writer http.ResponseWriter, request *http.Request) {
+	if !sameOrigin(request) {
+		writeJSON(writer, http.StatusForbidden, map[string]string{"error": "Cross-origin requests are not allowed"})
+		return
+	}
+	if !strings.HasPrefix(strings.ToLower(request.Header.Get("Content-Type")), "application/json") {
+		writeJSON(writer, http.StatusUnsupportedMediaType, map[string]string{"error": "Content-Type must be application/json"})
+		return
+	}
+	request.Body = http.MaxBytesReader(writer, request.Body, 64<<10)
+	var input customRequest
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "Invalid custom request"})
+		return
+	}
+	if err := ensureJSONEnd(decoder); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "Invalid custom request"})
+		return
+	}
+
+	cfg, err := s.configForDates(input.Start, input.End)
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	scope := strings.TrimSpace(input.Space)
+	if scope == "" {
+		scope = "All spaces"
+	}
+	if len(scope) > 120 || strings.ContainsAny(scope, "\r\n") {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "Invalid Jira space"})
+		return
+	}
+	job, err := s.custom.Create(customgen.Request{
+		Provider: input.Provider,
+		Prompt:   input.Prompt,
+		Scope:    scope,
+		Start:    cfg.Period.Start.Format("2006-01-02"),
+		End:      cfg.Period.End.AddDate(0, 0, -1).Format("2006-01-02"),
+		JQL:      cfg.JQL,
+	})
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(writer, http.StatusAccepted, customJobResponse(job))
+}
+
+func (s *Server) customJob(writer http.ResponseWriter, request *http.Request) {
+	job, ok := s.custom.Get(request.PathValue("id"))
+	if !ok {
+		writeJSON(writer, http.StatusNotFound, map[string]string{"error": "Custom job not found"})
+		return
+	}
+	writeJSON(writer, http.StatusOK, customJobResponse(job))
+}
+
+func (s *Server) customFile(writer http.ResponseWriter, request *http.Request) {
+	file, info, err := s.custom.Open(request.PathValue("id"), request.PathValue("path"))
+	if err != nil {
+		http.Error(writer, "Custom file not found", http.StatusNotFound)
+		return
+	}
+	defer func() {
+		if err := file.Close(); err != nil {
+			log.Printf("close custom file: %v", err)
+		}
+	}()
+	writer.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, safeDownloadName(filepath.Base(info.Name()))))
+	http.ServeContent(writer, request, info.Name(), info.ModTime(), file)
+}
+
+func customJobResponse(job customgen.Job) customgen.Job {
+	for index := range job.Files {
+		job.Files[index].URL = "/api/custom/" + url.PathEscape(job.ID) + "/files/" + escapePath(job.Files[index].Name)
+	}
+	return job
+}
+
+func escapePath(path string) string {
+	parts := strings.Split(filepath.ToSlash(path), "/")
+	for index := range parts {
+		parts[index] = url.PathEscape(parts[index])
+	}
+	return strings.Join(parts, "/")
+}
+
+func safeDownloadName(name string) string {
+	name = strings.ReplaceAll(name, `"`, "")
+	name = strings.ReplaceAll(name, "\r", "")
+	name = strings.ReplaceAll(name, "\n", "")
+	if name == "" {
+		return "custom-file"
+	}
+	return name
+}
+
+func ensureJSONEnd(decoder *json.Decoder) error {
+	var extra any
+	err := decoder.Decode(&extra)
+	if err == io.EOF {
+		return nil
+	}
+	if err == nil {
+		return fmt.Errorf("multiple JSON values")
+	}
+	return err
 }
 
 func (s *Server) reportJSON(writer http.ResponseWriter, request *http.Request) {
@@ -148,9 +285,13 @@ func (s *Server) selectSpace(data snapshot.Data, requested string, cfg config.Co
 }
 
 func (s *Server) requestConfig(request *http.Request) (config.Config, error) {
+	return s.configForDates(request.URL.Query().Get("start"), request.URL.Query().Get("end"))
+}
+
+func (s *Server) configForDates(start, end string) (config.Config, error) {
 	cfg := s.cfg
-	start := strings.TrimSpace(request.URL.Query().Get("start"))
-	end := strings.TrimSpace(request.URL.Query().Get("end"))
+	start = strings.TrimSpace(start)
+	end = strings.TrimSpace(end)
 	if start == "" && end == "" {
 		return cfg, nil
 	}
@@ -163,6 +304,14 @@ func (s *Server) requestConfig(request *http.Request) (config.Config, error) {
 	}
 	cfg.Period = period
 	return cfg, nil
+}
+
+func customOutputDir(outputPath string) string {
+	parent := filepath.Dir(outputPath)
+	if filepath.Base(parent) == "pdf" {
+		parent = filepath.Dir(parent)
+	}
+	return filepath.Join(parent, "custom")
 }
 
 func scopedReportPath(basePath, space string) string {
@@ -253,11 +402,23 @@ func securityHeaders(next http.Handler) http.Handler {
 		writer.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		writer.Header().Set("Referrer-Policy", "no-referrer")
 		writer.Header().Set("X-Content-Type-Options", "nosniff")
-		if request.URL.Path == "/api/report" || request.URL.Path == "/report.pdf" {
+		if request.URL.Path == "/api/report" || request.URL.Path == "/report.pdf" || strings.HasPrefix(request.URL.Path, "/api/custom") {
 			writer.Header().Set("Cache-Control", "no-store")
 		}
 		next.ServeHTTP(writer, request)
 	})
+}
+
+func sameOrigin(request *http.Request) bool {
+	origin := strings.TrimSpace(request.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "http") {
+		return false
+	}
+	return strings.EqualFold(parsed.Host, request.Host)
 }
 
 func localRequestsOnly(next http.Handler) http.Handler {
